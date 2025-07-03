@@ -1934,6 +1934,25 @@ static void refill_task_slice_dfl(struct task_struct *p)
 	__scx_add_event(scx_root, SCX_EV_REFILL_SLICE_DFL, 1);
 }
 
+/* While holding dsq->lock */
+static void dsq_update_first_task(struct scx_dispatch_q *dsq)
+{
+        struct task_struct *first = NULL;
+
+        if (!list_empty(&dsq->list)) {
+                first = list_first_entry(&dsq->list, struct task_struct,
+                                         scx.dsq_list.node);
+        }
+        rcu_assign_pointer(dsq->first_task, first);
+}
+
+/* Safe to run without holding the dsq's lock. */
+static struct task_struct *dsq_peek_first_task(struct scx_dispatch_q *dsq)
+{
+        return rcu_dereference(dsq->first_task);
+}
+
+
 static void dispatch_enqueue(struct scx_sched *sch, struct scx_dispatch_q *dsq,
 			     struct task_struct *p, u64 enq_flags)
 {
@@ -2007,6 +2026,8 @@ static void dispatch_enqueue(struct scx_sched *sch, struct scx_dispatch_q *dsq,
 		else
 			list_add_tail(&p->scx.dsq_list.node, &dsq->list);
 	}
+	/* Even the add_tail code path may have changed the first element. */
+	dsq_update_first_task(dsq);
 
 	/* seq records the order tasks are queued, used by BPF DSQ iterator */
 	dsq->seq++;
@@ -2062,6 +2083,7 @@ static void task_unlink_from_dsq(struct task_struct *p,
 
 	list_del_init(&p->scx.dsq_list.node);
 	dsq_mod_nr(dsq, -1);
+	dsq_update_first_task(dsq);
 }
 
 static void dispatch_dequeue(struct rq *rq, struct task_struct *p)
@@ -7124,6 +7146,30 @@ __bpf_kfunc void bpf_iter_scx_dsq_destroy(struct bpf_iter_scx_dsq *it)
 	kit->dsq = NULL;
 }
 
+/**
+ * scx_bpf_dsq_peek - Lockless peek at the first element.
+ * @dsq_id: DSQ to examine.
+ *
+ * Read the first element in the DSQ. This is semantically equivalent to using
+ * the DSQ iterator, but is lockfree.
+ * 
+ * Returns the pointer, or uses ERR_PTR() to encode an error as the pointer.
+ */
+ __bpf_kfunc struct task_struct* scx_bpf_dsq_peek(u64 dsq_id)
+ {
+	struct scx_sched *sch;
+	rcu_read_lock();
+	sch = rcu_dereference_check(scx_root, rcu_read_lock_bh_held());
+	
+	rcu_read_unlock();
+	if (unlikely(!sch))
+		return ERR_PTR(-ENODEV);
+	struct scx_dispatch_q *dsq;
+	dsq = find_user_dsq(sch, dsq_id);
+
+	return dsq_peek_first_task(dsq);
+ }
+
 __bpf_kfunc_end_defs();
 
 static s32 __bstr_format(u64 *data_buf, char *line_buf, size_t line_size,
@@ -7579,6 +7625,7 @@ BTF_KFUNCS_START(scx_kfunc_ids_any)
 BTF_ID_FLAGS(func, scx_bpf_kick_cpu)
 BTF_ID_FLAGS(func, scx_bpf_dsq_nr_queued)
 BTF_ID_FLAGS(func, scx_bpf_destroy_dsq)
+BTF_ID_FLAGS(func, scx_bpf_dsq_peek)
 BTF_ID_FLAGS(func, bpf_iter_scx_dsq_new, KF_ITER_NEW | KF_RCU_PROTECTED)
 BTF_ID_FLAGS(func, bpf_iter_scx_dsq_next, KF_ITER_NEXT | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_iter_scx_dsq_destroy, KF_ITER_DESTROY)

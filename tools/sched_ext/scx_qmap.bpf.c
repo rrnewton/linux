@@ -771,8 +771,8 @@ static int monitor_timerfn(void *map, int *key, struct bpf_timer *timer)
 
 	monitor_cpuperf();
 
-	if (print_shared_dsq)
-		dump_shared_dsq();
+	// if (print_shared_dsq)
+	dump_shared_dsq();
 
 	__COMPAT_scx_bpf_events(&events, sizeof(events));
 
@@ -819,12 +819,14 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(qmap_init)
 
 	bpf_timer_init(timer, &monitor_timer, CLOCK_MONOTONIC);
 	bpf_timer_set_callback(timer, monitor_timerfn);
+	bpf_printk("RRNDEBUG: In qmap_init and set the timer callback!");
 
 	return bpf_timer_start(timer, ONE_SEC_IN_NS, 0);
 }
 
 void BPF_STRUCT_OPS(qmap_exit, struct scx_exit_info *ei)
 {
+	bpf_printk("RRNDEBUG: qmap_exit called");
 	UEI_RECORD(uei, ei);
 }
 

@@ -40,6 +40,7 @@ const volatile u32 dsp_inf_loop_after;
 const volatile u32 dsp_batch;
 const volatile bool highpri_boosting;
 const volatile bool print_shared_dsq;
+const volatile bool print_local_dsqs;
 const volatile s32 disallow_tgid;
 const volatile bool suppress_dump;
 
@@ -52,11 +53,8 @@ struct qmap {
 	__uint(type, BPF_MAP_TYPE_QUEUE);
 	__uint(max_entries, 4096);
 	__type(value, u32);
-} queue0 SEC(".maps"),
-  queue1 SEC(".maps"),
-  queue2 SEC(".maps"),
-  queue3 SEC(".maps"),
-  queue4 SEC(".maps");
+} queue0 SEC(".maps"), queue1 SEC(".maps"), queue2 SEC(".maps"),
+	queue3 SEC(".maps"), queue4 SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
@@ -78,10 +76,8 @@ struct {
  * according to the following table.
  */
 static const u32 qidx_to_cpuperf_target[] = {
-	[0] = SCX_CPUPERF_ONE * 0 / 4,
-	[1] = SCX_CPUPERF_ONE * 1 / 4,
-	[2] = SCX_CPUPERF_ONE * 2 / 4,
-	[3] = SCX_CPUPERF_ONE * 3 / 4,
+	[0] = SCX_CPUPERF_ONE * 0 / 4, [1] = SCX_CPUPERF_ONE * 1 / 4,
+	[2] = SCX_CPUPERF_ONE * 2 / 4, [3] = SCX_CPUPERF_ONE * 3 / 4,
 	[4] = SCX_CPUPERF_ONE * 4 / 4,
 };
 
@@ -98,9 +94,9 @@ static u64 core_sched_tail_seqs[5];
 
 /* Per-task scheduling context */
 struct task_ctx {
-	bool	force_local;	/* Dispatch directly to local_dsq */
-	bool	highpri;
-	u64	core_sched_seq;
+	bool force_local; /* Dispatch directly to local_dsq */
+	bool highpri;
+	u64 core_sched_seq;
 };
 
 struct {
@@ -111,10 +107,10 @@ struct {
 } task_ctx_stor SEC(".maps");
 
 struct cpu_ctx {
-	u64	dsp_idx;	/* dispatch index */
-	u64	dsp_cnt;	/* remaining count */
-	u32	avg_weight;
-	u32	cpuperf_target;
+	u64 dsp_idx; /* dispatch index */
+	u64 dsp_cnt; /* remaining count */
+	u32 avg_weight;
+	u32 cpuperf_target;
 };
 
 struct {
@@ -127,7 +123,8 @@ struct {
 /* Statistics */
 u64 nr_enqueued, nr_dispatched, nr_reenqueued, nr_dequeued, nr_ddsp_from_enq;
 u64 nr_core_sched_execed;
-u64 nr_expedited_local, nr_expedited_remote, nr_expedited_lost, nr_expedited_from_timer;
+u64 nr_expedited_local, nr_expedited_remote, nr_expedited_lost,
+	nr_expedited_from_timer;
 u32 cpuperf_min, cpuperf_avg, cpuperf_max;
 u32 cpuperf_target_min, cpuperf_target_avg, cpuperf_target_max;
 
@@ -157,8 +154,8 @@ static struct task_ctx *lookup_task_ctx(struct task_struct *p)
 	return tctx;
 }
 
-s32 BPF_STRUCT_OPS(qmap_select_cpu, struct task_struct *p,
-		   s32 prev_cpu, u64 wake_flags)
+s32 BPF_STRUCT_OPS(qmap_select_cpu, struct task_struct *p, s32 prev_cpu,
+		   u64 wake_flags)
 {
 	struct task_ctx *tctx;
 	s32 cpu;
@@ -225,6 +222,7 @@ void BPF_STRUCT_OPS(qmap_enqueue, struct task_struct *p, u64 enq_flags)
 	 * task on the CPU, enqueue locally.
 	 */
 	if (tctx->force_local) {
+		// bpf_printk("RRNDEBUG: In qmap_enqueue force local is set!");
 		tctx->force_local = false;
 		scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL, slice_ns, enq_flags);
 		return;
@@ -233,8 +231,11 @@ void BPF_STRUCT_OPS(qmap_enqueue, struct task_struct *p, u64 enq_flags)
 	/* if select_cpu() wasn't called, try direct dispatch */
 	if (!__COMPAT_is_enq_cpu_selected(enq_flags) &&
 	    (cpu = pick_direct_dispatch_cpu(p, scx_bpf_task_cpu(p))) >= 0) {
+		bpf_printk(
+			"RRNDEBUG: In qmap_enqueue doing non-forced local enqueue!");
 		__sync_fetch_and_add(&nr_ddsp_from_enq, 1);
-		scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL_ON | cpu, slice_ns, enq_flags);
+		scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL_ON | cpu, slice_ns,
+				   enq_flags);
 		return;
 	}
 
@@ -247,6 +248,7 @@ void BPF_STRUCT_OPS(qmap_enqueue, struct task_struct *p, u64 enq_flags)
 	if (enq_flags & SCX_ENQ_REENQ) {
 		s32 cpu;
 
+		bpf_printk("RRNDEBUG: In qmap_enqueue on SHARED_DSQ V1!!");
 		scx_bpf_dsq_insert(p, SHARED_DSQ, 0, enq_flags);
 		cpu = scx_bpf_pick_idle_cpu(p->cpus_ptr, 0);
 		if (cpu >= 0)
@@ -262,6 +264,7 @@ void BPF_STRUCT_OPS(qmap_enqueue, struct task_struct *p, u64 enq_flags)
 
 	/* Queue on the selected FIFO. If the FIFO overflows, punt to global. */
 	if (bpf_map_push_elem(ring, &pid, 0)) {
+		bpf_printk("RRNDEBUG: In qmap_enqueue on SHARED_DSQ V2!!");
 		scx_bpf_dsq_insert(p, SHARED_DSQ, slice_ns, enq_flags);
 		return;
 	}
@@ -305,8 +308,43 @@ static void update_core_sched_head_seq(struct task_struct *p)
  */
 static bool dispatch_highpri(bool from_timer)
 {
-	struct task_struct *p;
+	struct task_struct *p, *p0;
 	s32 this_cpu = bpf_get_smp_processor_id();
+
+	p0 = scx_bpf_dsq_peek(SHARED_DSQ);
+
+	u32 counts_shared = 0;
+	bpf_for_each(scx_dsq, p, SHARED_DSQ, 0) {
+		counts_shared++;
+		bpf_printk(
+			"RRNDEBUG: in dispatch highpri, CountShared: %d, pointer %p (peeked %p)",
+			counts_shared, p, p0);
+	}
+	u32 counts_highpri = 0;
+	bpf_for_each(scx_dsq, p, HIGHPRI_DSQ, 0) {
+		bpf_printk(
+			"RRNDEBUG: in dispatch highpri, CountHighPri: %d, pointer %p",
+			counts_highpri, p);
+		counts_highpri++;
+	}
+
+	// if (counts_shared > 0) {
+	// 	bpf_printk("RRNDEBUG: in dispatch highpri, peek returned %p", p);
+	// }
+
+	// This IF alone also creates a verifier failure.
+	// if (counts_shared == 0 && p0 != NULL) {
+	// 	bpf_printk(
+	// 		"RRNDEBUG: LIKELYERROR - shared dsq seemed empty but peek returned %p",
+	// 		p0);
+	// 	scx_bpf_error("peek expected to return null");
+	// }
+
+	// if (counts_shared + counts_highpri > 0) {
+	// 	bpf_printk(
+	// 		"RRNDEBUG: In dispatch_highpri counts_shared: %d counts_highpri: %d",
+	// 		counts_shared, counts_highpri);
+	// }
 
 	/* scan SHARED_DSQ and move highpri tasks to HIGHPRI_DSQ */
 	bpf_for_each(scx_dsq, p, SHARED_DSQ, 0) {
@@ -318,12 +356,12 @@ static bool dispatch_highpri(bool from_timer)
 
 		if (tctx->highpri) {
 			/* exercise the set_*() and vtime interface too */
-			__COMPAT_scx_bpf_dsq_move_set_slice(
-				BPF_FOR_EACH_ITER, slice_ns * 2);
-			__COMPAT_scx_bpf_dsq_move_set_vtime(
-				BPF_FOR_EACH_ITER, highpri_seq++);
-			__COMPAT_scx_bpf_dsq_move_vtime(
-				BPF_FOR_EACH_ITER, p, HIGHPRI_DSQ, 0);
+			__COMPAT_scx_bpf_dsq_move_set_slice(BPF_FOR_EACH_ITER,
+							    slice_ns * 2);
+			__COMPAT_scx_bpf_dsq_move_set_vtime(BPF_FOR_EACH_ITER,
+							    highpri_seq++);
+			__COMPAT_scx_bpf_dsq_move_vtime(BPF_FOR_EACH_ITER, p,
+							HIGHPRI_DSQ, 0);
 		}
 	}
 
@@ -350,7 +388,8 @@ static bool dispatch_highpri(bool from_timer)
 				__sync_fetch_and_add(&nr_expedited_remote, 1);
 			}
 			if (from_timer)
-				__sync_fetch_and_add(&nr_expedited_from_timer, 1);
+				__sync_fetch_and_add(&nr_expedited_from_timer,
+						     1);
 		} else {
 			__sync_fetch_and_add(&nr_expedited_lost, 1);
 		}
@@ -405,12 +444,14 @@ void BPF_STRUCT_OPS(qmap_dispatch, s32 cpu, struct task_struct *prev)
 
 		fifo = bpf_map_lookup_elem(&queue_arr, &cpuc->dsp_idx);
 		if (!fifo) {
-			scx_bpf_error("failed to find ring %llu", cpuc->dsp_idx);
+			scx_bpf_error("failed to find ring %llu",
+				      cpuc->dsp_idx);
 			return;
 		}
 
 		/* Dispatch or advance. */
-		bpf_repeat(BPF_MAX_LOOPS) {
+		bpf_repeat(BPF_MAX_LOOPS)
+		{
 			struct task_ctx *tctx;
 
 			if (bpf_map_pop_elem(fifo, &pid))
@@ -525,13 +566,14 @@ static s64 task_qdist(struct task_struct *p)
  * of the queues to compare the two tasks which should be consistent with the
  * dispatch path behavior.
  */
-bool BPF_STRUCT_OPS(qmap_core_sched_before,
-		    struct task_struct *a, struct task_struct *b)
+bool BPF_STRUCT_OPS(qmap_core_sched_before, struct task_struct *a,
+		    struct task_struct *b)
 {
 	return task_qdist(a) > task_qdist(b);
 }
 
-void BPF_STRUCT_OPS(qmap_cpu_release, s32 cpu, struct scx_cpu_release_args *args)
+void BPF_STRUCT_OPS(qmap_cpu_release, s32 cpu,
+		    struct scx_cpu_release_args *args)
 {
 	u32 cnt;
 
@@ -571,14 +613,16 @@ void BPF_STRUCT_OPS(qmap_dump, struct scx_dump_ctx *dctx)
 	if (suppress_dump)
 		return;
 
-	bpf_for(i, 0, 5) {
+	bpf_for(i, 0, 5)
+	{
 		void *fifo;
 
 		if (!(fifo = bpf_map_lookup_elem(&queue_arr, &i)))
 			return;
 
 		scx_bpf_dump("QMAP FIFO[%d]:", i);
-		bpf_repeat(4096) {
+		bpf_repeat(4096)
+		{
 			if (bpf_map_pop_elem(fifo, &pid))
 				break;
 			scx_bpf_dump(" %d", pid);
@@ -587,7 +631,8 @@ void BPF_STRUCT_OPS(qmap_dump, struct scx_dump_ctx *dctx)
 	}
 }
 
-void BPF_STRUCT_OPS(qmap_dump_cpu, struct scx_dump_ctx *dctx, s32 cpu, bool idle)
+void BPF_STRUCT_OPS(qmap_dump_cpu, struct scx_dump_ctx *dctx, s32 cpu,
+		    bool idle)
 {
 	u32 zero = 0;
 	struct cpu_ctx *cpuc;
@@ -597,12 +642,14 @@ void BPF_STRUCT_OPS(qmap_dump_cpu, struct scx_dump_ctx *dctx, s32 cpu, bool idle
 	if (!(cpuc = bpf_map_lookup_percpu_elem(&cpu_ctx_stor, &zero, cpu)))
 		return;
 
-	scx_bpf_dump("QMAP: dsp_idx=%llu dsp_cnt=%llu avg_weight=%u cpuperf_target=%u",
-		     cpuc->dsp_idx, cpuc->dsp_cnt, cpuc->avg_weight,
-		     cpuc->cpuperf_target);
+	scx_bpf_dump(
+		"QMAP: dsp_idx=%llu dsp_cnt=%llu avg_weight=%u cpuperf_target=%u",
+		cpuc->dsp_idx, cpuc->dsp_cnt, cpuc->avg_weight,
+		cpuc->cpuperf_target);
 }
 
-void BPF_STRUCT_OPS(qmap_dump_task, struct scx_dump_ctx *dctx, struct task_struct *p)
+void BPF_STRUCT_OPS(qmap_dump_task, struct scx_dump_ctx *dctx,
+		    struct task_struct *p)
 {
 	struct task_ctx *taskc;
 
@@ -630,7 +677,8 @@ static void print_cpus(void)
 	online = scx_bpf_get_online_cpumask();
 
 	idx = 0;
-	bpf_for(cpu, 0, scx_bpf_nr_cpu_ids()) {
+	bpf_for(cpu, 0, scx_bpf_nr_cpu_ids())
+	{
 		if (!(p = MEMBER_VPTR(buf, [idx++])))
 			break;
 		if (bpf_cpumask_test_cpu(cpu, online))
@@ -694,7 +742,8 @@ static void monitor_cpuperf(void)
 	nr_cpu_ids = scx_bpf_nr_cpu_ids();
 	online = scx_bpf_get_online_cpumask();
 
-	bpf_for(i, 0, nr_cpu_ids) {
+	bpf_for(i, 0, nr_cpu_ids)
+	{
 		struct cpu_ctx *cpuc;
 		u32 cap, cur;
 
@@ -717,7 +766,8 @@ static void monitor_cpuperf(void)
 		cur_sum += cur * cap / SCX_CPUPERF_ONE;
 		cap_sum += cap;
 
-		if (!(cpuc = bpf_map_lookup_percpu_elem(&cpu_ctx_stor, &zero, i))) {
+		if (!(cpuc = bpf_map_lookup_percpu_elem(&cpu_ctx_stor, &zero,
+							i))) {
 			scx_bpf_error("failed to look up cpu_ctx");
 			goto out;
 		}
@@ -750,10 +800,11 @@ static void dump_shared_dsq(void)
 	struct task_struct *p;
 	s32 nr;
 
-	if (!(nr = scx_bpf_dsq_nr_queued(SHARED_DSQ)))
-		return;
+	if (!(nr = scx_bpf_dsq_nr_queued(SHARED_DSQ))) return;
 
-	bpf_printk("Dumping %d tasks in SHARED_DSQ in reverse order", nr);
+	// bpf_printk("Dumping %d tasks in SHARED_DSQ in reverse order", nr);
+	// p = scx_bpf_dsq_peek(SHARED_DSQ);
+	// bpf_printk("Result of peek: %p", p);
 
 	bpf_rcu_read_lock();
 	bpf_for_each(scx_dsq, p, SHARED_DSQ, SCX_DSQ_ITER_REV)
@@ -771,8 +822,12 @@ static int monitor_timerfn(void *map, int *key, struct bpf_timer *timer)
 
 	monitor_cpuperf();
 
-	if (print_shared_dsq)
-		dump_shared_dsq();
+	// if (print_shared_dsq)
+	dump_shared_dsq();
+
+	if (print_local_dsqs) {
+		// dump_local_dsqs();
+	}
 
 	__COMPAT_scx_bpf_events(&events, sizeof(events));
 
@@ -819,12 +874,14 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(qmap_init)
 
 	bpf_timer_init(timer, &monitor_timer, CLOCK_MONOTONIC);
 	bpf_timer_set_callback(timer, monitor_timerfn);
+	bpf_printk("RRNDEBUG: In qmap_init and set the timer callback!");
 
 	return bpf_timer_start(timer, ONE_SEC_IN_NS, 0);
 }
 
 void BPF_STRUCT_OPS(qmap_exit, struct scx_exit_info *ei)
 {
+	bpf_printk("RRNDEBUG: qmap_exit called");
 	UEI_RECORD(uei, ei);
 }
 

@@ -88,6 +88,7 @@ int main(int argc, char **argv)
 			break;
 		case 'P':
 			skel->rodata->print_shared_dsq = true;
+			printf("RRNDEBUG SETTING PRINT VARIABLE...\n");
 			break;
 		case 'H':
 			skel->rodata->highpri_boosting = true;
@@ -98,13 +99,15 @@ int main(int argc, char **argv)
 				skel->rodata->disallow_tgid = getpid();
 			break;
 		case 'D':
-			skel->struct_ops.qmap_ops->exit_dump_len = strtoul(optarg, NULL, 0);
+			skel->struct_ops.qmap_ops->exit_dump_len =
+				strtoul(optarg, NULL, 0);
 			break;
 		case 'S':
 			skel->rodata->suppress_dump = true;
 			break;
 		case 'p':
-			skel->struct_ops.qmap_ops->flags |= SCX_OPS_SWITCH_PARTIAL;
+			skel->struct_ops.qmap_ops->flags |=
+				SCX_OPS_SWITCH_PARTIAL;
 			break;
 		case 'v':
 			verbose = true;
@@ -117,25 +120,28 @@ int main(int argc, char **argv)
 
 	SCX_OPS_LOAD(skel, qmap_ops, scx_qmap, uei);
 	link = SCX_OPS_ATTACH(skel, qmap_ops, scx_qmap);
+	printf("RRNDEBUG: link returned from SCX_OPS_ATTACH: %p\n", link);
 
 	while (!exit_req && !UEI_EXITED(skel, uei)) {
 		long nr_enqueued = skel->bss->nr_enqueued;
 		long nr_dispatched = skel->bss->nr_dispatched;
 
-		printf("stats  : enq=%lu dsp=%lu delta=%ld reenq=%"PRIu64" deq=%"PRIu64" core=%"PRIu64" enq_ddsp=%"PRIu64"\n",
+		printf("stats  : enq=%lu dsp=%lu delta=%ld reenq=%" PRIu64
+		       " deq=%" PRIu64 " core=%" PRIu64 " enq_ddsp=%" PRIu64
+		       "\n",
 		       nr_enqueued, nr_dispatched, nr_enqueued - nr_dispatched,
 		       skel->bss->nr_reenqueued, skel->bss->nr_dequeued,
 		       skel->bss->nr_core_sched_execed,
 		       skel->bss->nr_ddsp_from_enq);
-		printf("         exp_local=%"PRIu64" exp_remote=%"PRIu64" exp_timer=%"PRIu64" exp_lost=%"PRIu64"\n",
+		printf("         exp_local=%" PRIu64 " exp_remote=%" PRIu64
+		       " exp_timer=%" PRIu64 " exp_lost=%" PRIu64 "\n",
 		       skel->bss->nr_expedited_local,
 		       skel->bss->nr_expedited_remote,
 		       skel->bss->nr_expedited_from_timer,
 		       skel->bss->nr_expedited_lost);
 		if (__COMPAT_has_ksym("scx_bpf_cpuperf_cur"))
 			printf("cpuperf: cur min/avg/max=%u/%u/%u target min/avg/max=%u/%u/%u\n",
-			       skel->bss->cpuperf_min,
-			       skel->bss->cpuperf_avg,
+			       skel->bss->cpuperf_min, skel->bss->cpuperf_avg,
 			       skel->bss->cpuperf_max,
 			       skel->bss->cpuperf_target_min,
 			       skel->bss->cpuperf_target_avg,
@@ -147,6 +153,7 @@ int main(int argc, char **argv)
 	bpf_link__destroy(link);
 	UEI_REPORT(skel, uei);
 	scx_qmap__destroy(skel);
+	printf("RRNDEBUG: link DESTROYED, and skel too\n");
 	/*
 	 * scx_qmap implements ops.cpu_on/offline() and doesn't need to restart
 	 * on CPU hotplug events.

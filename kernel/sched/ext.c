@@ -7162,17 +7162,24 @@ __bpf_kfunc void bpf_iter_scx_dsq_destroy(struct bpf_iter_scx_dsq *it)
 		struct scx_dispatch_q *dsq;
         dsq = find_user_dsq(sch, dsq_id);
 
-        // Fast path: if the first element pointer is available and non-null,
-        // use that.
-        struct task_struct *p0 = dsq_peek_first_task(dsq);
-        if (p0) return p0;
+	printk("Sched_ext: RNDEBUG(peek) - got dsq %p, got sch %p", dsq, sch);
 
-        // Slow path: use the iterator and lock:
-        struct bpf_iter_scx_dsq it;
-        BUG_ON(bpf_iter_scx_dsq_new(&it, dsq_id, 0));
-        struct task_struct *p = bpf_iter_scx_dsq_next(&it);
-        bpf_iter_scx_dsq_destroy(&it);
-        return p;
+	// Fast path: if the first element pointer is available and non-null,
+	// use that.
+	struct task_struct *p0 = dsq_peek_first_task(dsq);
+	if (p0) {
+		printk("Sched_ext: RNDEBUG(peek) - fast path succeeded, returning %p",
+		       p0);
+		return p0;
+	}
+
+	// Slow path: use the iterator and lock:
+	struct bpf_iter_scx_dsq it;
+	BUG_ON(bpf_iter_scx_dsq_new(&it, dsq_id, 0));
+	struct task_struct *p = bpf_iter_scx_dsq_next(&it);
+	bpf_iter_scx_dsq_destroy(&it);
+	printk("Sched_ext: RNDEBUG(peek) - SLOW path, returning %p", p0);
+	return p;
  }
 
 __bpf_kfunc_end_defs();

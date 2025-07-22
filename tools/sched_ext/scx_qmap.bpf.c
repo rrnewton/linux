@@ -40,6 +40,7 @@ const volatile u32 dsp_inf_loop_after;
 const volatile u32 dsp_batch;
 const volatile bool highpri_boosting;
 const volatile bool print_shared_dsq;
+const volatile bool print_local_dsqs;
 const volatile s32 disallow_tgid;
 const volatile bool suppress_dump;
 

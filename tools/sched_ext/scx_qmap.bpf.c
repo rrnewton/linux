@@ -305,13 +305,23 @@ static void update_core_sched_head_seq(struct task_struct *p)
  */
 static bool dispatch_highpri(bool from_timer)
 {
-	struct task_struct *p;
+	struct task_struct *p, *p0;
 	s32 this_cpu = bpf_get_smp_processor_id();
 
 	/* scan SHARED_DSQ and move highpri tasks to HIGHPRI_DSQ */
+	int counts_shared = 0;
+	bool error_found = false;
 	bpf_for_each(scx_dsq, p, SHARED_DSQ, 0) {
 		static u64 highpri_seq;
 		struct task_ctx *tctx;
+		p0 = scx_bpf_dsq_peek(scx_dsq);
+		if (counts_shared == 1 && p0 != p) {		
+			error_found = true; // BPF verifier workaround.	
+			// Any form of printing or errors here (or in a later conditional
+			// based on error_found state set here) will cause a verifier error:
+			//  `Global function qmap_dispatch() doesn't return scalar. Only those are supported.`
+			// scx_bpf_error("peek expected to return first element during iteration");
+		}
 
 		if (!(tctx = lookup_task_ctx(p)))
 			return false;

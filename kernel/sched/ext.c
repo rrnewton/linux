@@ -2015,12 +2015,15 @@ static void dispatch_enqueue(struct scx_sched *sch, struct scx_dispatch_q *dsq,
 		 */
 		rbp = rb_prev(&p->scx.dsq_priq);
 		if (rbp) {
-			struct task_struct *prev =
-				container_of(rbp, struct task_struct,
-					     scx.dsq_priq);
-			list_add(&p->scx.dsq_list.node, &prev->scx.dsq_list.node);
+			struct task_struct *prev = container_of(
+				rbp, struct task_struct, scx.dsq_priq);
+			list_add(&p->scx.dsq_list.node,
+				 &prev->scx.dsq_list.node);
+			/* First task unchanged - no update needed */
 		} else {
 			list_add(&p->scx.dsq_list.node, &dsq->list);
+			/* New task is at head - use fastpath */
+			dsq_update_first_task_fastpath(dsq, p);
 		}
 	} else {
 		/* a FIFO DSQ shouldn't be using PRIQ enqueuing */
@@ -2028,13 +2031,19 @@ static void dispatch_enqueue(struct scx_sched *sch, struct scx_dispatch_q *dsq,
 			scx_error(sch, "DSQ ID 0x%016llx already had PRIQ-enqueued tasks",
 				  dsq->id);
 
-		if (enq_flags & (SCX_ENQ_HEAD | SCX_ENQ_PREEMPT))
+		if (enq_flags & (SCX_ENQ_HEAD | SCX_ENQ_PREEMPT)) {
 			list_add(&p->scx.dsq_list.node, &dsq->list);
-		else
+			/* New task inserted at head - use fastpath */
+			dsq_update_first_task_fastpath(dsq, p);
+		} else {
+			bool was_empty;
+
+			was_empty = list_empty(&dsq->list);
 			list_add_tail(&p->scx.dsq_list.node, &dsq->list);
+			if (was_empty)
+				dsq_update_first_task_fastpath(dsq, p);
+		}
 	}
-	/* Even the add_tail code path may have changed the first element. */
-	dsq_update_first_task(dsq);
 
 	/* seq records the order tasks are queued, used by BPF DSQ iterator */
 	dsq->seq++;

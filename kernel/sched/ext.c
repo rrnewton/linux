@@ -1941,13 +1941,7 @@ static void refill_task_slice_dfl(struct task_struct *p)
 static void dsq_set_first_task(struct scx_dispatch_q *dsq,
 			       struct task_struct *p)
 {
-	/*
-	 * Issue a write memory barrier so that any writes to the inserted
-	 * task are visible to any thread using peek to access the task
-	 * written here.
-	 */
-	smp_wmb();
-	WRITE_ONCE(dsq->first_task, p);
+	rcu_assign_pointer(dsq->first_task, p);
 }
 
 /* While holding dsq->lock */
@@ -1958,13 +1952,6 @@ static void dsq_update_first_task(struct scx_dispatch_q *dsq)
 	first_task = nldsq_next_task(dsq, NULL, false);
 	dsq_set_first_task(dsq, first_task);
 }
-
-/* Safe to run without holding the dsq's lock. */
-static struct task_struct *dsq_peek_first_task(struct scx_dispatch_q *dsq)
-{
-	return READ_ONCE(dsq->first_task);
-}
-
 
 static void dispatch_enqueue(struct scx_sched *sch, struct scx_dispatch_q *dsq,
 			     struct task_struct *p, u64 enq_flags)
@@ -7186,15 +7173,18 @@ __bpf_kfunc struct task_struct *scx_bpf_dsq_peek(u64 dsq_id)
 {
 	struct scx_sched *sch;
 	struct scx_dispatch_q *dsq;
+	struct task_struct *p;
 
 	rcu_read_lock();
 	sch = rcu_dereference_check(scx_root, rcu_read_lock_bh_held());
-	rcu_read_unlock();
 
-	if (unlikely(!sch))
+	if (unlikely(!sch)) {
+		rcu_read_unlock();
 		return ERR_PTR(-ENODEV);
+	}
 	dsq = find_user_dsq(sch, dsq_id);
-	return dsq_peek_first_task(dsq);
+	p = rcu_dereference(dsq->first_task);
+	return p;
 }
 
 __bpf_kfunc_end_defs();

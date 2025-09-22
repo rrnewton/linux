@@ -919,6 +919,21 @@ static void refill_task_slice_dfl(struct task_struct *p)
 	__scx_add_event(scx_root, SCX_EV_REFILL_SLICE_DFL, 1);
 }
 
+static void dsq_set_first_task(struct scx_dispatch_q *dsq,
+			       struct task_struct *p)
+{
+	rcu_assign_pointer(dsq->first_task, p);
+}
+
+/* While holding dsq->lock */
+static void dsq_update_first_task(struct scx_dispatch_q *dsq)
+{
+	struct task_struct *first_task;
+
+	first_task = nldsq_next_task(dsq, NULL, false);
+	dsq_set_first_task(dsq, first_task);
+}
+
 static void dispatch_enqueue(struct scx_sched *sch, struct scx_dispatch_q *dsq,
 			     struct task_struct *p, u64 enq_flags)
 {
@@ -6065,6 +6080,33 @@ __bpf_kfunc void bpf_iter_scx_dsq_destroy(struct bpf_iter_scx_dsq *it)
 		raw_spin_unlock_irqrestore(&kit->dsq->lock, flags);
 	}
 	kit->dsq = NULL;
+}
+
+/**
+ * scx_bpf_dsq_peek - Lockless peek at the first element.
+ * @dsq_id: DSQ to examine.
+ *
+ * Read the first element in the DSQ. This is semantically equivalent to using
+ * the DSQ iterator, but is lockfree.
+ *
+ * Returns the pointer, or uses ERR_PTR() to encode an error as the pointer.
+ */
+__bpf_kfunc struct task_struct *scx_bpf_dsq_peek(u64 dsq_id)
+{
+	struct scx_sched *sch;
+	struct scx_dispatch_q *dsq;
+	struct task_struct *p;
+
+	rcu_read_lock();
+	sch = rcu_dereference_check(scx_root, rcu_read_lock_bh_held());
+
+	if (unlikely(!sch)) {
+		rcu_read_unlock();
+		return ERR_PTR(-ENODEV);
+	}
+	dsq = find_user_dsq(sch, dsq_id);
+	p = rcu_dereference(dsq->first_task);
+	return p;
 }
 
 __bpf_kfunc_end_defs();

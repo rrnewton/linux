@@ -94,7 +94,7 @@ static enum scx_test_status run(void *ctx)
 
 	printf("  DSQ peek result 2 (after insert): %d\n",
 	       skel->data->dsq_peek_result2);
-	printf("  DSQ peek result 2, expected: %d\n",
+	printf("  DSQ peek result 2, expected: %ld\n",
 	       skel->data->dsq_peek_result2_expected);
 	if (skel->data->dsq_peek_result2 ==
 	    skel->data->dsq_peek_result2_expected)

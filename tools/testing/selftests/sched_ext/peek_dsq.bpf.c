@@ -20,7 +20,7 @@ int dsq_destroy_result = -1;
 int dsq_insert_result = -1;
 int dsq_peek_result1 = -1;
 int dsq_peek_result2 = -1;
-int dsq_peek_result2_expected = -1;
+long dsq_peek_result2_expected = -1;
 int test_dsq_id = 1234; /* Use a simple ID like create_dsq example */
 int enqueue_count = -1;
 int debug_iter_ret = -1;
@@ -60,6 +60,7 @@ static inline struct task_struct *debug_dsq_peek(u64 dsq_id)
 /* Struct_ops scheduler for testing DSQ peek operations */
 void BPF_STRUCT_OPS(peek_dsq_enqueue, struct task_struct *p, u64 enq_flags)
 {
+	// bpf_printk("peek_dsq_enqueue called for pid %d\n", p->pid);
 	enqueue_count++;
 
 	/* On the first task, just do the empty DSQ test and insert into test DSQ */
@@ -71,8 +72,11 @@ void BPF_STRUCT_OPS(peek_dsq_enqueue, struct task_struct *p, u64 enq_flags)
 
 		/* Test 2: Insert task into test DSQ for testing in dispatch callback */
 		scx_bpf_dsq_insert(p, test_dsq_id, 0, enq_flags);
+		// flush_dispatch_buf()?
+		// empty DSQ, move_to_local() for NOOP, for global flush.
+
 		dsq_insert_result = 1; /* Mark that we inserted */
-		dsq_peek_result2_expected = (int)p; /* Expected the task we just inserted */
+		dsq_peek_result2_expected = (long)p; /* Expected the task we just inserted */
 
 		insert_test_done = true;
 	} else {
@@ -84,6 +88,8 @@ void BPF_STRUCT_OPS(peek_dsq_enqueue, struct task_struct *p, u64 enq_flags)
 s32 BPF_STRUCT_OPS_SLEEPABLE(peek_dsq_init)
 {
 	s32 err;
+
+	bpf_printk("peek_dsq_init called\n");
 
 	/* Initialize state first */
 	scheduler_enabled = true;
@@ -108,6 +114,7 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(peek_dsq_init)
 
 void BPF_STRUCT_OPS(peek_dsq_dispatch, s32 cpu, struct task_struct *prev)
 {
+	bpf_printk("peek_dsq_dispatch called on CPU %d, global dsq %d, test dsq %d\n", cpu, SCX_DSQ_GLOBAL, test_dsq_id);
 	/* Complete the peek test if we inserted a task but haven't tested peek yet */
 	if (insert_test_done && dsq_insert_result == 1 && dsq_peek_result2 == -1) {
 		/* Test 3: Peek DSQ after insert - should return the task we inserted */
@@ -128,6 +135,7 @@ void BPF_STRUCT_OPS(peek_dsq_dispatch, s32 cpu, struct task_struct *prev)
 
 void BPF_STRUCT_OPS(peek_dsq_exit, struct scx_exit_info *ei)
 {
+	bpf_printk("peek_dsq_exit called\n");
 	scx_bpf_destroy_dsq(test_dsq_id);
 	dsq_destroy_result = 1;
 

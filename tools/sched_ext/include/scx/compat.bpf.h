@@ -40,6 +40,17 @@ bool scx_bpf_dispatch_from_dsq___compat(struct bpf_iter_scx_dsq *it__iter, struc
 bool scx_bpf_dispatch_vtime_from_dsq___compat(struct bpf_iter_scx_dsq *it__iter, struct task_struct *p, u64 dsq_id, u64 enq_flags) __ksym __weak;
 int bpf_cpumask_populate(struct cpumask *dst, void *src, size_t src__sz) __ksym __weak;
 
+#define scx_bpf_dsq_peek(dsq_id)					       \
+	(bpf_ksym_exists(scx_bpf_dsq_peek) ? scx_bpf_dsq_peek(dsq_id) : ({    \
+		struct task_struct *p = NULL;				       \
+		struct bpf_iter_scx_dsq it;				       \
+		int ret = bpf_iter_scx_dsq_new(&it, dsq_id, 0);	       \
+		if (ret == 0)						       \
+			p = bpf_iter_scx_dsq_next(&it);		       \
+		bpf_iter_scx_dsq_destroy(&it);				       \
+		p;							       \
+	}))
+
 #define scx_bpf_dsq_insert(p, dsq_id, slice, enq_flags)				\
 	(bpf_ksym_exists(scx_bpf_dsq_insert) ?					\
 	 scx_bpf_dsq_insert((p), (dsq_id), (slice), (enq_flags)) :		\
